@@ -1,5 +1,5 @@
 import torch
-from torchvision import datasets, transforms
+from torchvision import transforms
 from torch.utils.data import DataLoader
 from chexpert_dataset import CheXpertDataset
 

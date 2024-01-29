@@ -1,15 +1,17 @@
+import torch
+from torch import save, load
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import DataLoader
 from torchvision.models import vgg16
-from torch import save, load
+from torchvision import transforms
 import wandb
 import pandas as pd
-from chexpert_dataset import CheXpertDataset
-from torch.utils.data import DataLoader
-import torch
 from sklearn.metrics import accuracy_score, classification_report, f1_score, precision_score, recall_score, roc_auc_score
 from tqdm import tqdm
 import numpy as np
+from chexpert_dataset import CheXpertDataset
+
 
 # TODO solve problem of unbalanced classes
 
@@ -21,13 +23,11 @@ def train_model(n_epochs, n_labels, dataset_name, run_name, train_loader):
     mdl = vgg16(pretrained=True)
     # substitute last layer from classifier
     mdl.classifier[6] = nn.Linear(4096, n_labels)
-    # freeze parameters
-    #for param in mdl.parameters():
-    #    param.requires_grad = False
 
+    # prepare optmizer and loss function
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(mdl.classifier.parameters(), lr=0.001)
-
+    # train
     for epoch in range(n_epochs):  
         mdl.train().to(DEVICE)
         running_loss = 0.0
@@ -40,8 +40,9 @@ def train_model(n_epochs, n_labels, dataset_name, run_name, train_loader):
             # Backward pass and optimize
             loss.backward()
             optimizer.step()
+            # update loss
             running_loss += loss.item()
-
+        # aux saving
         save(mdl, f'models/{dataset_name}/vgg16_finetuned_{run_name}_epoch{epoch}.pth')
         print(f"Epoch {epoch}, Loss: {running_loss/len(train_loader):.2}")
         wandb.log({'Train Loss': running_loss/len(train_loader)})
@@ -49,12 +50,15 @@ def train_model(n_epochs, n_labels, dataset_name, run_name, train_loader):
 
 
 def evaluate_model(mdl, test_loader):
+    # put model in evaluation mode
     mdl.eval() 
     preds = []
     y_true = []
-    with torch.no_grad():  # No need to track gradients
+    # No need to track gradients
+    with torch.no_grad():  
         for inputs, labels, _ in tqdm(test_loader):
             outputs = mdl(inputs.to(DEVICE))
+            # calculate label
             _, predicted = torch.max(outputs.data, 1)
             preds.append(predicted.tolist())
             y_true.append(labels.tolist())
@@ -68,7 +72,7 @@ if __name__ == "__main__":
 
     # prepare args
     dataset_name = "split_clean_onlydiagnosis"
-    run_name = "v1"
+    run_name = "norm_v2"
     configs = {
         "n_labels": get_n_labels(dataset_name),
         "n_epochs": 3,
@@ -83,12 +87,18 @@ if __name__ == "__main__":
                job_type='vgg16',
                name=f"{dataset_name}_{run_name}",
                config=configs)
+    
+    preprocess = transforms.Compose([
+        transforms.Resize((224, 224)), # we need to rescale for the same size as vgg16 expects
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5062, 0.5062, 0.5062], std=[0.2873, 0.2873, 0.2873]),
+    ])
 
     # load datasets
-    train = CheXpertDataset(csv_file=f"{FOLDER}/train_{dataset_name}.csv")
+    train = CheXpertDataset(csv_file=f"{FOLDER}/train_{dataset_name}.csv", transform=preprocess)
     train_loader = DataLoader(train, batch_size=configs["batch_size"], shuffle=True)
 
-    test = CheXpertDataset(csv_file= f"{FOLDER}/test_{dataset_name}.csv")
+    test = CheXpertDataset(csv_file= f"{FOLDER}/test_{dataset_name}.csv", transform=preprocess)
     test_loader = DataLoader(test, batch_size=configs["batch_size"], shuffle=True)
 
     #print("start training...")
@@ -96,7 +106,7 @@ if __name__ == "__main__":
 
     # save the model
     #save(mdl, f'models/{dataset_name}/vgg16_finetuned_{run_name}.pth')
-    mdl = load(f'models/{dataset_name}/vgg16_finetuned_{run_name}.pth')
+    mdl = load(f'models/{dataset_name}/vgg16_finetuned_norm_v2_epoch0.pth')
 
     print("start evaluation...")
     true_labels, predictions = evaluate_model(mdl, test_loader)

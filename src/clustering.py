@@ -10,11 +10,14 @@ import wandb
 import seaborn as sns
 from sklearn.metrics import silhouette_samples, silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.manifold import TSNE
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN
 from sklearn.decomposition import PCA
+from umap import UMAP
+
 from tqdm import tqdm
 from chexpert_dataset import CheXpertDataset
 from aux import get_mean_std
+
 
 DEVICE = "mps" if not torch.cuda.is_available() else "cuda:0"
 FOLDER = "data/chestxpert/"
@@ -36,7 +39,6 @@ def plot_silhouette(X, labels):
     # Plot
     plt.figure(figsize=(10, 7))
     y_lower, y_upper = 0, 0
-    #n_clusters = len(np.unique(labels))  # Number of clusters
 
     for _, cluster in enumerate(np.unique(labels)):
         cluster_silhouette_vals = silhouette_vals[labels == cluster]
@@ -87,10 +89,16 @@ def compute_tsne(X, labels):
     return plt
 
 
+# TODO umap - kmeans
+# TODO umap - dbscan
+# TODO pca - dbscan
+
 if __name__ == "__main__":
     # some args
-    dataset_name = "split_clean"
-    mdl_type = "pretrained" # pretrained or finetuned 
+    dataset_name = "split_clean_onlydiagnosis"
+    mdl_type = "finetuned" # pretrained or finetuned 
+    dim_red = "pca" # pca or umap
+    clust = "kmeans" # kmeans or dbscan
     # do not forget the model name
 
     # configs
@@ -105,17 +113,17 @@ if __name__ == "__main__":
     wandb.init(project="taecac",
                group="clustering",
                entity="gomes-inesisabel",
-               job_type=f'vgg16{mdl_type}_pca_kmeans',
+               job_type=f'vgg16{mdl_type}_{dim_red}_{clust}',
                config=configs)
     
     # get data mean and std so that we can normalize before applying our algorithms
-    mean, std = get_mean_std(f"{FOLDER}train_{dataset_name}.csv")
+    # mean, std = get_mean_std(f"{FOLDER}train_{dataset_name}.csv")
     
     # prepare data
     preprocess = transforms.Compose([
-            transforms.Resize((224, 224)), # we need to rescale for the same size as vgg16 expects
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
+        transforms.Resize((224, 224)), # we need to rescale for the same size as vgg16 expects
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5062, 0.5062, 0.5062], std=[0.2873, 0.2873, 0.2873]),
     ])
 
     # load data
@@ -126,7 +134,7 @@ if __name__ == "__main__":
     if mdl_type == "pretrained":
         model = vgg16(pretrained=True).to(DEVICE)
     elif mdl_type == "finetuned":
-        model = load(f'models/{dataset_name}/vgg16_finetuned_v1_epoch2.pth').to(DEVICE)
+        model = load(f'models/{dataset_name}/vgg16_finetuned_norm_v2_epoch0.pth').to(DEVICE)
     else:
         raise ValueError("mdl_type must be either pretrained or finetuned")
 
@@ -147,15 +155,26 @@ if __name__ == "__main__":
     wandb.log({"n_features": features.shape[1]})
 
     print("start dimensionality reduction...")
-    pca = PCA(n_components=0.8, svd_solver='full', random_state=0)
-    reduced_features = pca.fit_transform(features)
+    if dim_red == "pca":
+        red_alg = PCA(n_components=0.8, svd_solver='full', random_state=0)
+    elif dim_red == "umap":
+        red_alg = UMAP(n_components=3, random_state=0)
+    else:
+        raise ValueError("dim_red must be either pca or umap")
+
+    reduced_features = red_alg.fit_transform(features)
 
     wandb.log({"red_features": reduced_features.shape[1]})
 
     print("start clustering...")
-    kmeans = KMeans(n_clusters=configs["n_labels"], random_state=0)
-    clusters = kmeans.fit_predict(reduced_features)
-
+    if clust == "dbscan":
+        cl_alg = DBSCAN(eps=0.3, min_samples=10)
+    elif clust == "kmeans":
+        cl_alg = KMeans(n_clusters=configs["n_labels"], random_state=0)
+    else:
+        raise ValueError("clustering must be either dbscan or kmeans")
+    
+    clusters = cl_alg.fit_predict(reduced_features)
     print("evaluation")
 
     # evaluate how good the clusters are
