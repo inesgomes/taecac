@@ -13,9 +13,10 @@ import seaborn as sns
 from sklearn.metrics import silhouette_samples, silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.manifold import TSNE
 from torch import load
+from tqdm import tqdm
 
 
-DEVICE = "mps"
+DEVICE = "mps" if not torch.cuda.is_available() else "cuda:0"
 
 def plot_cluster_size(clusters, n_labels):
     """
@@ -51,6 +52,20 @@ def plot_silhouette(X, labels):
     plt.axvline(x=np.mean(silhouette_vals), color="red", linestyle="--")  # Average silhouette score 
     return plt
 
+def plot_confusion_matrix(df):
+    # find distribution of clusters per label
+    df = pd.DataFrame({"cluster": clusters, "label": all_labels})
+    df_group = df.groupby("label", as_index=False).cluster.value_counts()
+    df_agg = pd.merge(left=df_group,right=df.groupby("label").count().reset_index().rename(columns={"cluster": "sum"}), on="label") #.groupby("label").apply(lambda x: x/x.sum())
+    df_agg["norm"] = df_agg["count"]/df_agg["sum"]
+    df_count = df_agg.pivot(index="label", columns="cluster", values="norm").fillna(0)
+
+    # create heatmap
+    plt.figure(figsize=(10, 7))
+    sns.heatmap(df_count, annot=True, cmap="Blues", fmt=".1%", linewidths=.5)
+    plt.title("sum of percentages at the row level is 100%")
+    return plt
+
 
 def compute_tsne(X, labels):
     tsne = TSNE(n_components=2)
@@ -61,8 +76,8 @@ def compute_tsne(X, labels):
 
 if __name__ == "__main__":
     # some args
-    dataset = "train_sml_clean"
-    mdl_type = "pretrained" # or finetuned
+    dataset = "test_split_clean"
+    mdl_type = "pretrained" # pretrained or finetuned
 
     # configs
     filename = f"data/chestxpert/{dataset}.csv"
@@ -87,29 +102,39 @@ if __name__ == "__main__":
     if mdl_type == "pretrained":
         model = vgg16(pretrained=True).to(DEVICE)
     elif mdl_type == "finetuned":
-        model = load('models/vgg16_finetuned.pth')
+        model = load('models/vgg16_finetuned_epoch0.pth').to(DEVICE)
+    else:
+        raise ValueError("mdl_type must be either pretrained or finetuned")
+
+    # remove the classifier layer, so that we can access only the embedding
+    model.classifier = torch.nn.Identity()
+
+    print("start extracting features...")
 
     # Extract features using the selected model
     features = []
     all_labels = []
     with torch.no_grad():  # No need to track gradients
-        for images, labels in data_loader:
+        for images, _, labels in tqdm(data_loader):
             output = model(images.to(DEVICE))
-            output = output.view(output.size(0), -1).cpu().numpy()  # Flatten the features  # Move features to CPU and convert to numpy
-            features.append(output.tolist()) 
-            all_labels.extend(labels.tolist())#.cpu().numpy())
+            features.append(output.detach().cpu().numpy())
+            all_labels.append(labels)
+        features = np.concatenate(features, axis=0)
+        all_labels = np.concatenate(all_labels, axis=0)
 
     wandb.log({"n_features": features.shape[1]})
 
-    # Dimensionality Reductions
+    print("start dimensionality reduction...")
     pca = PCA(n_components=0.8, svd_solver='full', random_state=0)
     reduced_features = pca.fit_transform(features)
 
     wandb.log({"red_features": reduced_features.shape[1]})
 
-    # Clustering
+    print("start clustering...")
     kmeans = KMeans(n_clusters=configs["n_labels"], random_state=0)
     clusters = kmeans.fit_predict(reduced_features)
+
+    print("evaluation")
 
     # evaluate how good the clusters are
     # the higher the better
@@ -119,30 +144,11 @@ if __name__ == "__main__":
     # lower the better
     wandb.log({"davies_bouldin_score": davies_bouldin_score(reduced_features, clusters)})
 
-    # evaluation
-    # ONLY IF I HAVE THE TRUE LABELS 
-    # simarity score - perfect if 1; 0 if random
-    # wandb.log({"adjusted_rand_score": adjusted_rand_score(all_labels, clusters)})
-    # wandb.log({"adjusted_mutual_info_score": adjusted_mutual_info_score(all_labels, clusters)})
-    #vec_metrics = homogeneity_completeness_v_measure(all_labels, clusters)
-    # wandb.log({"homogeneity": vec_metrics[0]})
-    # wandb.log({"completeness": vec_metrics[1]})
-    #wandb.log({"v_measure": vec_metrics[2]})
-    #wandb.log({"fowlkes_mallows_score": fowlkes_mallows_score(all_labels, clusters)})
-
-    # find distribution of clusters per label
-    df = pd.DataFrame({"cluster": clusters, "label": all_labels})
-    df_group = df.groupby("label", as_index=False).cluster.value_counts()
-    df_agg = pd.merge(left=df_group,right=df.groupby("label").count().reset_index().rename(columns={"cluster": "sum"}), on="label") #.groupby("label").apply(lambda x: x/x.sum())
-    df_agg["norm"] = df_agg["count"]/df_agg["sum"]
-    df_count = df_agg.pivot(index="label", columns="cluster", values="norm").fillna(0)
-
     # some plots that are relevant
     wandb.log({"cluster_size": wandb.Image(plot_cluster_size(clusters, configs["n_labels"]))})
     wandb.log({"silhouette": wandb.Image(plot_silhouette(reduced_features, clusters))})
     # heatmap with percentage values and space between cells and bigger figure
-    plt.figure(figsize=(10, 7))
-    wandb.log({"confusion_matrix": wandb.Image(sns.heatmap(df_count, annot=True, cmap="Blues", fmt=".1%", linewidths=.5))})
+    wandb.log({"confusion_matrix": wandb.Image(plot_confusion_matrix(df))})
     # visualization of the clusters
     plt.figure(figsize=(10, 7))
     wandb.log({"tsne": wandb.Image(compute_tsne(reduced_features, clusters))})

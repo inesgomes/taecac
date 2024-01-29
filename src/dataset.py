@@ -24,8 +24,9 @@ class CheXpertDataset(Dataset):
         # we need to concert to RGB because chestxpert is grayscal but vgg16 expects 3 channels
         image = Image.open(self.frame.iloc[idx, 0]).convert('RGB')
         label = self.frame.iloc[idx, 1]
+        name = self.frame.iloc[idx, 2]
 
         if self.transform:
             image = self.transform(image)
 
-        return image, label
+        return image, label, name
