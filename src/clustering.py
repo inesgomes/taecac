@@ -1,22 +1,23 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
 import torch
-from torchvision.models import vgg16
-from dataset import CheXpertDataset
+from torch import load
 from torch.utils.data import DataLoader
-import numpy as np
+from torchvision.models import vgg16
+from torchvision import transforms
 import pandas as pd
 import wandb
 import seaborn as sns
 from sklearn.metrics import silhouette_samples, silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.manifold import TSNE
-from torch import load
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from tqdm import tqdm
-
+from chexpert_dataset import CheXpertDataset
+from aux import get_mean_std
 
 DEVICE = "mps" if not torch.cuda.is_available() else "cuda:0"
+FOLDER = "data/chestxpert/"
 
 def plot_cluster_size(clusters, n_labels):
     """
@@ -52,40 +53,53 @@ def plot_silhouette(X, labels):
     plt.axvline(x=np.mean(silhouette_vals), color="red", linestyle="--")  # Average silhouette score 
     return plt
 
-def plot_confusion_matrix(df):
+def plot_confusion_matrix(labels, clusters, axis):
     # find distribution of clusters per label
-    df = pd.DataFrame({"cluster": clusters, "label": all_labels})
+    df = pd.DataFrame({"cluster": clusters, "label": labels})
     df_group = df.groupby("label", as_index=False).cluster.value_counts()
-    df_agg = pd.merge(left=df_group,right=df.groupby("label").count().reset_index().rename(columns={"cluster": "sum"}), on="label") #.groupby("label").apply(lambda x: x/x.sum())
+
+    if axis == 1:
+        df_agg = pd.merge(left=df_group,right=df.groupby("label").count().reset_index().rename(columns={"cluster": "sum"}), on="label")
+    else:
+        df_agg = pd.merge(left=df_group,right=df.groupby("cluster").count().reset_index().rename(columns={"label": "sum"}), on="cluster")
+
+
     df_agg["norm"] = df_agg["count"]/df_agg["sum"]
     df_count = df_agg.pivot(index="label", columns="cluster", values="norm").fillna(0)
 
     # create heatmap
     plt.figure(figsize=(10, 7))
     sns.heatmap(df_count, annot=True, cmap="Blues", fmt=".1%", linewidths=.5)
-    plt.title("sum of percentages at the row level is 100%")
+    level = "row" if axis==0 else "column"
+    plt.title(f"sum of percentages at the {level} level is 100%")
     return plt
 
 
 def compute_tsne(X, labels):
+    _, ax = plt.subplots(figsize=(10, 7))
     tsne = TSNE(n_components=2)
     reduced_data_tsne = tsne.fit_transform(X)
-    plt.scatter(reduced_data_tsne[:, 0], reduced_data_tsne[:, 1], c=labels)
+    ax.scatter(reduced_data_tsne[:, 0], reduced_data_tsne[:, 1], c=labels, s=1, alpha=0.7)
+    ax.set_xlabel("t-SNE axis 1")
+    ax.set_ylabel("t-SNE axis 2")
+    ax.set_title("Plot of the clusters in two axis extracted from t-SNE")
+    ax.legend()
     return plt
 
 
 if __name__ == "__main__":
     # some args
-    dataset = "test_split_clean"
-    mdl_type = "pretrained" # pretrained or finetuned
+    dataset_name = "split_clean"
+    mdl_type = "pretrained" # pretrained or finetuned 
+    # do not forget the model name
 
     # configs
-    filename = f"data/chestxpert/{dataset}.csv"
+    filename = f"{FOLDER}test_{dataset_name}.csv"
     configs = {
-        "dataset": dataset,
+        "dataset": dataset_name,
         "n_image": len(pd.read_csv(filename)),
         "n_labels": pd.read_csv(filename)["target"].nunique(),
-        "batch_size": 256
+        "batch_size": 256,
     }
 
     wandb.init(project="taecac",
@@ -94,15 +108,25 @@ if __name__ == "__main__":
                job_type=f'vgg16{mdl_type}_pca_kmeans',
                config=configs)
     
-    # load data for clustering
-    dataset = CheXpertDataset(csv_file=filename)
+    # get data mean and std so that we can normalize before applying our algorithms
+    mean, std = get_mean_std(f"{FOLDER}train_{dataset_name}.csv")
+    
+    # prepare data
+    preprocess = transforms.Compose([
+            transforms.Resize((224, 224)), # we need to rescale for the same size as vgg16 expects
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std),
+    ])
+
+    # load data
+    dataset = CheXpertDataset(csv_file=filename, transform=preprocess)
     data_loader = DataLoader(dataset, batch_size=configs["batch_size"], shuffle=True)
 
-    # load model
+    # load model to extract embeddings
     if mdl_type == "pretrained":
         model = vgg16(pretrained=True).to(DEVICE)
     elif mdl_type == "finetuned":
-        model = load('models/vgg16_finetuned_epoch0.pth').to(DEVICE)
+        model = load(f'models/{dataset_name}/vgg16_finetuned_v1_epoch2.pth').to(DEVICE)
     else:
         raise ValueError("mdl_type must be either pretrained or finetuned")
 
@@ -110,8 +134,6 @@ if __name__ == "__main__":
     model.classifier = torch.nn.Identity()
 
     print("start extracting features...")
-
-    # Extract features using the selected model
     features = []
     all_labels = []
     with torch.no_grad():  # No need to track gradients
@@ -148,9 +170,9 @@ if __name__ == "__main__":
     wandb.log({"cluster_size": wandb.Image(plot_cluster_size(clusters, configs["n_labels"]))})
     wandb.log({"silhouette": wandb.Image(plot_silhouette(reduced_features, clusters))})
     # heatmap with percentage values and space between cells and bigger figure
-    wandb.log({"confusion_matrix": wandb.Image(plot_confusion_matrix(df))})
+    wandb.log({"confusion_matrix_col": wandb.Image(plot_confusion_matrix(all_labels, clusters, axis=0))})
+    wandb.log({"confusion_matrix_row": wandb.Image(plot_confusion_matrix(all_labels, clusters, axis=1))})
     # visualization of the clusters
-    plt.figure(figsize=(10, 7))
     wandb.log({"tsne": wandb.Image(compute_tsne(reduced_features, clusters))})
 
     wandb.finish()
