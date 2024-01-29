@@ -7,10 +7,11 @@ from torchvision.models import vgg16
 from torchvision import transforms
 import wandb
 import pandas as pd
-from sklearn.metrics import accuracy_score, classification_report, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
 from tqdm import tqdm
 import numpy as np
 from chexpert_dataset import CheXpertDataset
+import seaborn as sns
 
 
 # TODO solve problem of unbalanced classes
@@ -101,12 +102,12 @@ if __name__ == "__main__":
     test = CheXpertDataset(csv_file= f"{FOLDER}/test_{dataset_name}.csv", transform=preprocess)
     test_loader = DataLoader(test, batch_size=configs["batch_size"], shuffle=True)
 
-    #print("start training...")
-    #mdl = train_model(configs["n_epochs"], configs["n_labels"], dataset_name, run_name, train_loader)
+    print("start training...")
+    mdl = train_model(configs["n_epochs"], configs["n_labels"], dataset_name, run_name, train_loader)
 
     # save the model
-    #save(mdl, f'models/{dataset_name}/vgg16_finetuned_{run_name}.pth')
-    mdl = load(f'models/{dataset_name}/vgg16_finetuned_norm_v2_epoch0.pth')
+    save(mdl, f'models/{dataset_name}/vgg16_finetuned_{run_name}.pth')
+    #mdl = load(f'models/{dataset_name}/vgg16_finetuned_norm_v2_epoch0.pth')
 
     print("start evaluation...")
     true_labels, predictions = evaluate_model(mdl, test_loader)
@@ -121,7 +122,9 @@ if __name__ == "__main__":
     wandb.log({"recall_micro": recall_score(true_labels, predictions, average="micro")})
     wandb.log({"recall_macro": recall_score(true_labels, predictions, average="macro")})
     wandb.log({"recall_weighted": recall_score(true_labels, predictions, average="weighted")})
-    # wandb.log({"roc_auc": roc_auc_score(true_labels, predictions, multi_class='ovr', average="weighted")})
     print(classification_report(true_labels, predictions))
+
+    # plot confusion matrix
+    wandb.log({"confusion_matrix": wandb.Image(sns.heatmap(confusion_matrix(true_labels, predictions)))})
 
     wandb.finish()

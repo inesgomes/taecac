@@ -9,6 +9,7 @@ import pandas as pd
 import wandb
 import seaborn as sns
 from sklearn.metrics import silhouette_samples, silhouette_score, calinski_harabasz_score, davies_bouldin_score
+from sklearn.metrics.cluster import contingency_matrix
 from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.decomposition import PCA
@@ -76,7 +77,6 @@ def plot_confusion_matrix(labels, clusters, axis):
     plt.title(f"sum of percentages at the {level} level is 100%")
     return plt
 
-
 def compute_tsne(X, labels):
     _, ax = plt.subplots(figsize=(10, 7))
     tsne = TSNE(n_components=2)
@@ -89,15 +89,11 @@ def compute_tsne(X, labels):
     return plt
 
 
-# TODO umap - kmeans
-# TODO umap - dbscan
-# TODO pca - dbscan
-
 if __name__ == "__main__":
     # some args
     dataset_name = "split_clean_onlydiagnosis"
     mdl_type = "finetuned" # pretrained or finetuned 
-    dim_red = "pca" # pca or umap
+    dim_red = "umap" # pca or umap
     clust = "kmeans" # kmeans or dbscan
     # do not forget the model name
 
@@ -108,6 +104,7 @@ if __name__ == "__main__":
         "n_image": len(pd.read_csv(filename)),
         "n_labels": pd.read_csv(filename)["target"].nunique(),
         "batch_size": 256,
+        "n_umap": 12
     }
 
     wandb.init(project="taecac",
@@ -153,19 +150,21 @@ if __name__ == "__main__":
         all_labels = np.concatenate(all_labels, axis=0)
 
     wandb.log({"n_features": features.shape[1]})
+    wandb.log({"silhouette_score_vgg16": silhouette_score(features, all_labels)})
 
     print("start dimensionality reduction...")
     if dim_red == "pca":
         red_alg = PCA(n_components=0.8, svd_solver='full', random_state=0)
     elif dim_red == "umap":
-        red_alg = UMAP(n_components=3, random_state=0)
+        red_alg = UMAP(n_components=configs["n_umap"], random_state=0)
     else:
         raise ValueError("dim_red must be either pca or umap")
 
     reduced_features = red_alg.fit_transform(features)
 
     wandb.log({"red_features": reduced_features.shape[1]})
-
+    wandb.log({"silhouette_score_reduction": silhouette_score(reduced_features, all_labels)})
+    
     print("start clustering...")
     if clust == "dbscan":
         cl_alg = DBSCAN(eps=0.3, min_samples=10)
@@ -190,7 +189,11 @@ if __name__ == "__main__":
     wandb.log({"silhouette": wandb.Image(plot_silhouette(reduced_features, clusters))})
     # heatmap with percentage values and space between cells and bigger figure
     wandb.log({"confusion_matrix_col": wandb.Image(plot_confusion_matrix(all_labels, clusters, axis=0))})
-    wandb.log({"confusion_matrix_row": wandb.Image(plot_confusion_matrix(all_labels, clusters, axis=1))})
+    wandb.log({"confusion_matrix_row": wandb.Image(plot_confusion_matrix(all_labels, clusters, axis=1))})  
+    # contigency matrix
+    plt.figure(figsize=(10, 7))
+    wandb.log({"contingency_matrix": wandb.Image(sns.heatmap(contingency_matrix(all_labels, clusters), annot=True, fmt=".1%", linewidths=1))})
+
     # visualization of the clusters
     wandb.log({"tsne": wandb.Image(compute_tsne(reduced_features, clusters))})
 
