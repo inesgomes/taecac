@@ -7,11 +7,12 @@ from torchvision.models import vgg16
 from torchvision import transforms
 import wandb
 import pandas as pd
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
 from tqdm import tqdm
 import numpy as np
 from chexpert_dataset import CheXpertDataset
 import seaborn as sns
+import matplotlib.pyplot as plt
 
 
 # TODO solve problem of unbalanced classes
@@ -69,6 +70,16 @@ def evaluate_model(mdl, test_loader):
 def get_n_labels(filename):
     return pd.read_csv(f"{FOLDER}train_{filename}.csv")["target"].nunique()
 
+
+def plot_confusion_matrix(true, preds):
+    cm = confusion_matrix(true, preds)
+    plt.figure(figsize=(10, 7))
+    sns.heatmap(cm, annot=True, fmt='g', cmap='crest', cbar=True, linewidths=0.5)
+    plt.xlabel('Predicted labels')
+    plt.ylabel('True labels')
+    plt.title('Confusion Matrix')
+    return plt
+
 if __name__ == "__main__":
 
     # prepare args
@@ -103,11 +114,11 @@ if __name__ == "__main__":
     test_loader = DataLoader(test, batch_size=configs["batch_size"], shuffle=True)
 
     print("start training...")
-    mdl = train_model(configs["n_epochs"], configs["n_labels"], dataset_name, run_name, train_loader)
+    #mdl = train_model(configs["n_epochs"], configs["n_labels"], dataset_name, run_name, train_loader)
 
     # save the model
-    save(mdl, f'models/{dataset_name}/vgg16_finetuned_{run_name}.pth')
-    #mdl = load(f'models/{dataset_name}/vgg16_finetuned_norm_v2_epoch0.pth')
+    #save(mdl, f'models/{dataset_name}/vgg16_finetuned_{run_name}.pth')
+    mdl = load(f'models/{dataset_name}/vgg16_finetuned_norm_v2_epoch0.pth')
 
     print("start evaluation...")
     true_labels, predictions = evaluate_model(mdl, test_loader)
@@ -124,7 +135,9 @@ if __name__ == "__main__":
     wandb.log({"recall_weighted": recall_score(true_labels, predictions, average="weighted")})
     print(classification_report(true_labels, predictions))
 
+    # TODO training results
+
     # plot confusion matrix
-    wandb.log({"confusion_matrix": wandb.Image(sns.heatmap(confusion_matrix(true_labels, predictions)))})
+    wandb.log({"confusion_matrix": wandb.Image(plot_confusion_matrix(true=true_labels, preds=predictions))})
 
     wandb.finish()
